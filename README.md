@@ -294,19 +294,6 @@ Instead, this tool specifically focuses on session persistence and defers window
 
 ## ssh workflow
 
-### Try it out quickly
-If you'd like to try out `zmx` and `ssh` without fiddling your `ssh` config, make sure to pass the `-t` option to `ssh`.  Here's an example:
-
-```bash
-ssh -t dev-box zmx attach default
-```
-
-Without `-t`, the remote shell will not know it's talking to a terminal, and the display will likely get messed up.
-
-This option isn't needed if you follow the configuration steps below, because `RequestTTY yes` does the same thing.
-
-### Configure it for regular use
-
 Using `zmx` with `ssh` is a first-class citizen. Instead of using `ssh` to remote into your system with a single terminal and `n` tmux panes, you open `n` terminals and run `ssh` for all of them. This might sound tedious, but there are tools to make this a delightful workflow.
 
 First, create an `ssh` config entry for your remote dev server:
@@ -453,7 +440,6 @@ abduco provides session management (i.e. it allows programs to be run independen
 
 ## community tools
 
-- [emacs-term-sessions](https://github.com/ArthurHeymans/emacs-term-sessions) Persistent terminal sessions in Emacs, both local and remote.
 - [pi-zmx](https://github.com/deevus/pi-zmx) -- [pi](https://pi.dev) extension for zmx.
 - [zsm](https://github.com/mdsakalu/zmx-session-manager) -- TUI session manager for zmx. List, preview, filter, and kill sessions from an interactive terminal UI.
 - [zmosh](https://github.com/mmonad/zmosh) -- A fork of zmx that adds encrypted UDP auto-reconnect for remote sessions (like mosh).
