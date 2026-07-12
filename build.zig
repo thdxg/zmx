@@ -32,11 +32,6 @@ pub fn build(b: *std.Build) void {
     const dep = b.dependency("ghostty", .{
         .target = target,
         .optimize = optimize,
-        .@"emit-lib-vt" = true,
-        // Not redundant: in lib-vt mode emit-xcframework defaults to "xcodebuild
-        // on PATH" (true even via the CLT stub), which pulls in the iOS SDK at
-        // configure time and breaks builds without full Xcode.
-        .@"emit-xcframework" = false,
     });
     exe_mod.addImport(
         "ghostty-vt",
@@ -71,8 +66,6 @@ pub fn build(b: *std.Build) void {
         const test_dep = b.dependency("ghostty", .{
             .target = target,
             .optimize = optimize,
-            .@"emit-lib-vt" = true,
-            .@"emit-xcframework" = false,
         });
         test_module.addImport(
             "ghostty-vt",
@@ -124,8 +117,6 @@ pub fn build(b: *std.Build) void {
             if (b.lazyDependency("ghostty", .{
                 .target = resolved,
                 .optimize = .ReleaseSafe,
-                .@"emit-lib-vt" = true,
-                .@"emit-xcframework" = false,
             })) |release_dep| {
                 release_mod.addImport("ghostty-vt", release_dep.module("ghostty-vt"));
             }
