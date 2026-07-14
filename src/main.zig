@@ -476,8 +476,7 @@ const Cfg = struct {
 
     pub fn init(alloc: std.mem.Allocator) !Cfg {
         const socket_dir = try socketDir(alloc);
-        errdefer alloc.free(socket_dir);
-        const log_dir = try logDir(alloc);
+        const log_dir = try std.fmt.allocPrint(alloc, "{s}/logs", .{socket_dir});
         errdefer alloc.free(log_dir);
 
         const dir_mode = if (std.posix.getenv("ZMX_DIR_MODE")) |m|
@@ -512,25 +511,9 @@ const Cfg = struct {
             try std.fmt.allocPrint(alloc, "{s}/zmx", .{xdg_runtime})
         else
             try std.fmt.allocPrint(alloc, "{s}/zmx-{d}", .{ tmpdir, uid });
+        errdefer alloc.free(socket_dir);
 
         return socket_dir;
-    }
-
-    fn logDir(alloc: std.mem.Allocator) ![]const u8 {
-        const log_dir = if (posix.getenv("ZMX_DIR")) |zmxdir|
-            try std.fmt.allocPrint(alloc, "{s}/logs", .{zmxdir})
-        else if (posix.getenv("XDG_STATE_HOME")) |xdg_state_home|
-            try std.fmt.allocPrint(alloc, "{s}/zmx/logs", .{xdg_state_home})
-        else if (posix.getenv("HOME")) |home_dir|
-            try std.fmt.allocPrint(alloc, "{s}/.local/state/zmx/logs", .{home_dir})
-        else fallback: {
-            // This is the last resort: falling back to /tmp/$UID if HOME is unset.
-            const tmpdir = std.mem.trimRight(u8, posix.getenv("TMPDIR") orelse "/tmp", "/");
-            const uid = posix.getuid();
-            break :fallback try std.fmt.allocPrint(alloc, "{s}/zmx-{d}", .{ tmpdir, uid });
-        };
-
-        return log_dir;
     }
 
     pub fn deinit(self: *Cfg, alloc: std.mem.Allocator) void {
@@ -539,24 +522,15 @@ const Cfg = struct {
     }
 
     pub fn mkdir(self: *Cfg) !void {
-        try mkdirAll(self.socket_dir, @intCast(self.dir_mode));
-        try mkdirAll(self.log_dir, @intCast(self.dir_mode));
-    }
+        posix.mkdirat(posix.AT.FDCWD, self.socket_dir, @intCast(self.dir_mode)) catch |err| switch (err) {
+            error.PathAlreadyExists => {},
+            else => return err,
+        };
 
-    fn mkdirAll(sub_dir_path: []const u8, mode: posix.mode_t) !void {
-        var it = try std.fs.path.componentIterator(sub_dir_path);
-        var component = it.last() orelse return error.BadPathName;
-        while (true) {
-            posix.mkdirat(posix.AT.FDCWD, component.path, mode) catch |err| switch (err) {
-                error.PathAlreadyExists => {},
-                error.FileNotFound => |e| {
-                    component = it.previous() orelse return e;
-                    continue;
-                },
-                else => |e| return e,
-            };
-            component = it.next() orelse return;
-        }
+        posix.mkdirat(posix.AT.FDCWD, self.log_dir, @intCast(self.dir_mode)) catch |err| switch (err) {
+            error.PathAlreadyExists => {},
+            else => return err,
+        };
     }
 };
 
@@ -728,8 +702,8 @@ const Daemon = struct {
         var ws: cross.c.struct_winsize = .{
             .ws_row = size.rows,
             .ws_col = size.cols,
-            .ws_xpixel = size.xpixel,
-            .ws_ypixel = size.ypixel,
+            .ws_xpixel = 0,
+            .ws_ypixel = 0,
         };
 
         var master_fd: c_int = undefined;
@@ -873,19 +847,15 @@ const Daemon = struct {
                 };
 
                 defer {
-                    // Close and unlink the listen socket BEFORE handleKill()'s
-                    // 500ms SIGHUP->SIGKILL grace sleep. Otherwise a `zmx run`
-                    // for the same name issued in that window will hang waiting
-                    // for a connect.
+                    self.handleKill();
+                    self.deinit();
+                    posix.close(pty_fd);
+                    _ = posix.waitpid(self.pid, 0);
                     posix.close(server_sock_fd);
                     std.log.info("deleting socket file session={s}", .{self.session_name});
                     dir.deleteFile(self.session_name) catch |err| {
                         std.log.warn("failed to delete socket file err={s}", .{@errorName(err)});
                     };
-                    self.handleKill();
-                    self.deinit();
-                    posix.close(pty_fd);
-                    _ = posix.waitpid(self.pid, 0);
                 }
 
                 try daemonLoop(self, server_sock_fd, pty_fd);
@@ -1008,8 +978,8 @@ const Daemon = struct {
             var ws: cross.c.struct_winsize = .{
                 .ws_row = resize.rows,
                 .ws_col = resize.cols,
-                .ws_xpixel = resize.xpixel,
-                .ws_ypixel = resize.ypixel,
+                .ws_xpixel = 0,
+                .ws_ypixel = 0,
             };
             _ = cross.c.ioctl(pty_fd, cross.c.TIOCSWINSZ, &ws);
             // Disable prompt_redraw before resize. The daemon's internal terminal
@@ -1047,8 +1017,8 @@ const Daemon = struct {
         var ws: cross.c.struct_winsize = .{
             .ws_row = resize.rows,
             .ws_col = resize.cols,
-            .ws_xpixel = resize.xpixel,
-            .ws_ypixel = resize.ypixel,
+            .ws_xpixel = 0,
+            .ws_ypixel = 0,
         };
         _ = cross.c.ioctl(pty_fd, cross.c.TIOCSWINSZ, &ws);
         // Disable prompt_redraw before resize (same rationale as handleInit).
@@ -1191,8 +1161,14 @@ const Daemon = struct {
         std.log.debug("run command len={d}", .{payload.len});
     }
 
-    pub fn handleOutput(self: *Daemon, payload: []const u8, vt_stream: anytype) !void {
-        vt_stream.nextSlice(payload);
+    pub fn handleOutput(
+        self: *Daemon,
+        payload: []const u8,
+        vt_stream: anytype,
+        osc8_stripper: *util.Osc8Stripper,
+    ) !void {
+        const state_payload = try osc8_stripper.strip(self.alloc, payload);
+        vt_stream.nextSlice(state_payload);
         self.has_pty_output = true;
         for (self.clients.items) |client| {
             try ipc.appendMessage(self.alloc, &client.write_buf, .Output, payload);
@@ -1820,17 +1796,6 @@ fn kill(cfg: *Cfg, session_name: []const u8, force: bool) !void {
         error.BrokenPipe, error.ConnectionResetByPeer => return,
         else => return err,
     };
-
-    // Block until the daemon hangs up. The daemon's shutdown defer closes
-    // and unlinks the listen socket before it closes client connections,
-    // so by the time we read EOF here the session name is free for reuse
-    // and a subsequent `zmx run <name>` can't land in the dying daemon's
-    // accept backlog.
-    var drain: [256]u8 = undefined;
-    while (true) {
-        const n = posix.read(fd, &drain) catch break;
-        if (n == 0) break;
-    }
 
     var buf: [100]u8 = undefined;
     var w = std.fs.File.stdout().writer(&buf);
@@ -2537,6 +2502,8 @@ fn daemonLoop(daemon: *Daemon, server_sock_fd: i32, pty_fd: i32) !void {
     defer term.deinit(daemon.alloc);
     var vt_stream = term.vtStream();
     defer vt_stream.deinit();
+    var osc8_stripper = util.Osc8Stripper{};
+    defer osc8_stripper.deinit(daemon.alloc);
 
     daemon_loop: while (daemon.running) {
         poll_fds.clearRetainingCapacity();
@@ -2629,8 +2596,8 @@ fn daemonLoop(daemon: *Daemon, server_sock_fd: i32, pty_fd: i32) !void {
                     std.log.info("shell exited pty_fd={d}", .{pty_fd});
                     break :daemon_loop;
                 } else {
-                    // Feed PTY output to terminal emulator for state tracking
-                    vt_stream.nextSlice(buf[0..n]);
+                    const state_payload = try osc8_stripper.strip(daemon.alloc, buf[0..n]);
+                    vt_stream.nextSlice(state_payload);
                     daemon.has_pty_output = true;
 
                     // When no real terminal client has attached yet, respond to
@@ -2732,7 +2699,7 @@ fn daemonLoop(daemon: *Daemon, server_sock_fd: i32, pty_fd: i32) !void {
                 while (client.read_buf.next()) |msg| {
                     switch (msg.header.tag) {
                         .Input => try daemon.handleInput(client, msg.payload),
-                        .Output => try daemon.handleOutput(msg.payload, &vt_stream),
+                        .Output => try daemon.handleOutput(msg.payload, &vt_stream, &osc8_stripper),
                         .Init => try daemon.handleInit(client, pty_fd, &term, msg.payload),
                         .Switch => try daemon.handleSwitch(msg.payload),
                         .Resize => try daemon.handleResize(client, pty_fd, &term, msg.payload),
