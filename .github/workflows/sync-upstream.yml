@@ -41,6 +41,7 @@ env:
   DOWNSTREAM_FILES: >-
     .github/workflows/build-zmx.yml
     .github/workflows/sync-upstream.yml
+    .github/workflows/assert-no-drift.yml
     .github/downstream/0001-strip-osc8-state-tracking.patch
 
 jobs:

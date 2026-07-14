@@ -1,0 +1,113 @@
+name: Assert No Drift
+
+# Positive guard that this fork is EXACTLY pristine upstream + one downstream
+# commit — the invariant sync-upstream.yml maintains (macterm#168). The old
+# sync bug silently reverted upstream files while the parent pointer looked
+# current, shipping a stale artifact; the same class of bug in the ghostty fork
+# resurfaced macterm#112. sync-upstream was rewritten to be revert-proof; this
+# workflow is the assertion that nothing has drifted anyway, so a regression is
+# caught here instead of by a user reporting a downstream symptom.
+#
+# It fails loudly when either:
+#   1. `main` is not `upstream/main` + exactly one commit (the fork drifted, the
+#      sync stopped running, or someone pushed extra commits), OR
+#   2. that one downstream commit touches any path outside the allowlist
+#      (DOWNSTREAM_FILES in sync-upstream.yml + the paths each
+#      .github/downstream/*.patch declares) — i.e. it reverted/edited upstream
+#      source it shouldn't.
+#
+# Freshness: the parent must be an ANCESTOR of upstream/main within
+# MAX_AGE_DAYS. Exact-match (parent == upstream HEAD) is the fresh-sync ideal;
+# a parent a little behind HEAD is fine (upstream moved since the last 6am
+# sync). Too far behind means the scheduled sync has silently stopped.
+
+on:
+  schedule:
+    - cron: "0 7 * * *" # an hour after sync-upstream's 6am run
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  # Must match DOWNSTREAM_FILES in sync-upstream.yml. Kept as a literal (not
+  # sourced from that file) so a corruption of sync-upstream.yml itself can't
+  # widen the allowlist unnoticed.
+  DOWNSTREAM_FILES: >-
+    .github/workflows/build-zmx.yml
+    .github/workflows/sync-upstream.yml
+    .github/workflows/assert-no-drift.yml
+    .github/downstream/0001-strip-osc8-state-tracking.patch
+  # How far behind upstream HEAD the fork's base may fall before the sync is
+  # presumed broken. A daily sync should keep this at 0–1 days.
+  MAX_AGE_DAYS: "4"
+
+jobs:
+  assert:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Assert fork == upstream + one allowlisted commit
+        run: |
+          set -euo pipefail
+          git remote add upstream https://github.com/neurosnap/zmx.git
+          git fetch --quiet upstream main
+
+          parent="$(git rev-parse HEAD~1)"
+          upstream_head="$(git rev-parse upstream/main)"
+
+          # (1) The downstream commit's parent must be pristine upstream:
+          # an ancestor of upstream/main (allowing upstream to have moved since
+          # the last sync), never something upstream doesn't contain.
+          if ! git merge-base --is-ancestor "$parent" upstream/main; then
+            echo "::error::HEAD~1 ($parent) is not an ancestor of upstream/main ($upstream_head)."
+            echo "::error::The fork has drifted from pristine upstream (or carries >1 downstream commit). Re-run sync-upstream.yml."
+            exit 1
+          fi
+
+          # Freshness: how far behind upstream HEAD is our base?
+          behind="$(git rev-list --count "${parent}..${upstream_head}")"
+          echo "Fork base is $behind commit(s) behind upstream/main."
+          if [ "$parent" = "$upstream_head" ]; then
+            echo "Base is exactly upstream/main (a fresh sync)."
+          else
+            age_days="$(( ( $(git log -1 --format=%ct "$upstream_head") - $(git log -1 --format=%ct "$parent") ) / 86400 ))"
+            echo "Base commit is ~${age_days} day(s) older than upstream HEAD."
+            if [ "$age_days" -gt "$MAX_AGE_DAYS" ]; then
+              echo "::error::Fork base is ~${age_days} days behind upstream (> ${MAX_AGE_DAYS}). The scheduled sync has likely stopped."
+              exit 1
+            fi
+          fi
+
+          # (2) Build the allowlist of paths the single downstream commit may
+          # touch: DOWNSTREAM_FILES + every path declared inside each patch
+          # (its `+++ b/<path>` lines), so adding a new .patch self-updates the
+          # allowlist without editing this workflow.
+          allow="$(mktemp)"
+          for f in $DOWNSTREAM_FILES; do echo "$f"; done >> "$allow"
+          shopt -s nullglob
+          for p in .github/downstream/*.patch; do
+            grep -E '^\+\+\+ b/' "$p" | sed -E 's#^\+\+\+ b/##' >> "$allow"
+          done
+          sort -u "$allow" -o "$allow"
+          echo "Allowlisted downstream paths:"; sed 's/^/  /' "$allow"
+
+          # Every path the downstream commit changed must be in the allowlist.
+          changed="$(git diff --name-only HEAD~1 HEAD)"
+          echo "Downstream commit changed:"; echo "$changed" | sed 's/^/  /'
+          unexpected=""
+          while IFS= read -r path; do
+            [ -z "$path" ] && continue
+            grep -qxF "$path" "$allow" || unexpected="${unexpected}${path}"$'\n'
+          done <<< "$changed"
+          if [ -n "$unexpected" ]; then
+            echo "::error::The downstream commit touches paths outside the allowlist — it may be reverting or editing upstream source:"
+            echo "$unexpected" | sed 's/^/  /'
+            echo "::error::If this is an intentional new downstream change, add it as a .github/downstream/*.patch (or to DOWNSTREAM_FILES) so it's declared."
+            exit 1
+          fi
+
+          echo "OK: main is pristine upstream + one allowlisted downstream commit."
