@@ -1191,8 +1191,14 @@ const Daemon = struct {
         std.log.debug("run command len={d}", .{payload.len});
     }
 
-    pub fn handleOutput(self: *Daemon, payload: []const u8, vt_stream: anytype) !void {
-        vt_stream.nextSlice(payload);
+    pub fn handleOutput(
+        self: *Daemon,
+        payload: []const u8,
+        vt_stream: anytype,
+        osc8_stripper: *util.Osc8Stripper,
+    ) !void {
+        const state_payload = try osc8_stripper.strip(self.alloc, payload);
+        vt_stream.nextSlice(state_payload);
         self.has_pty_output = true;
         for (self.clients.items) |client| {
             try ipc.appendMessage(self.alloc, &client.write_buf, .Output, payload);
@@ -2564,6 +2570,8 @@ fn daemonLoop(daemon: *Daemon, server_sock_fd: i32, pty_fd: i32) !void {
     defer term.deinit(daemon.alloc);
     var vt_stream = term.vtStream();
     defer vt_stream.deinit();
+    var osc8_stripper = util.Osc8Stripper{};
+    defer osc8_stripper.deinit(daemon.alloc);
 
     // Carries the tail of the previous PTY read so the task-exit marker
     // search below can see across a read() boundary. Sized to comfortably
@@ -2665,8 +2673,8 @@ fn daemonLoop(daemon: *Daemon, server_sock_fd: i32, pty_fd: i32) !void {
                     // On the next iteration, daemon.running will be false.
                     daemon.running = false;
                 } else {
-                    // Feed PTY output to terminal emulator for state tracking
-                    vt_stream.nextSlice(buf[0..n]);
+                    const state_payload = try osc8_stripper.strip(daemon.alloc, buf[0..n]);
+                    vt_stream.nextSlice(state_payload);
                     daemon.has_pty_output = true;
 
                     // When no real terminal client has attached yet, respond to
@@ -2782,7 +2790,7 @@ fn daemonLoop(daemon: *Daemon, server_sock_fd: i32, pty_fd: i32) !void {
                 while (client.read_buf.next()) |msg| {
                     switch (msg.header.tag) {
                         .Input => try daemon.handleInput(client, msg.payload),
-                        .Output => try daemon.handleOutput(msg.payload, &vt_stream),
+                        .Output => try daemon.handleOutput(msg.payload, &vt_stream, &osc8_stripper),
                         .Init => try daemon.handleInit(client, pty_fd, &term, msg.payload),
                         .Switch => try daemon.handleSwitch(msg.payload),
                         .Resize => try daemon.handleResize(client, pty_fd, &term, msg.payload),
