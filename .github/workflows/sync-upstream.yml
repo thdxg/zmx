@@ -11,10 +11,13 @@ name: Sync Upstream
 #      Every .patch must ALSO be listed in DOWNSTREAM_FILES: the reset to
 #      pristine upstream deletes anything not snapshotted, so an unlisted
 #      patch would silently vanish on the next sync.
-#      Current: 0001 casts Cfg.log_mode (u32) to mode_t at the two fromMode
-#      call sites that miss the cast — mode_t is u16 on macOS, so the build
-#      breaks only for us, not for upstream's Linux targets. Retire when
-#      upstream fixes it. (Previous patch, the OSC 8 state-tracking strip —
+#      Current, both macOS-only breaks from upstream's zig 0.16 + daemonize
+#      work, to retire when upstream fixes them: 0001 casts Cfg.log_mode
+#      (u32) to mode_t at the two fromMode call sites that miss the cast
+#      (mode_t is u16 on macOS); 0002 types wakeSignalPipe's first param
+#      with the platform SIG enum instead of a hardcoded std.os.linux.SIG.
+#      Neither changes upstream's Linux behavior. (Previous patch, the OSC
+#      8 state-tracking strip —
 #      zmx#182 workaround, thdxg/zmx#1 — was retired when upstream bumped
 #      libghostty past ghostty#13394, which fixes the HyperlinkSetOutOfMemory
 #      abort properly.)
@@ -52,6 +55,7 @@ env:
     .github/workflows/sync-upstream.yml
     .github/workflows/assert-no-drift.yml
     .github/downstream/0001-cast-log_mode-to-mode_t-for-macos.patch
+    .github/downstream/0002-use-portable-sig-type-in-wake-handler.patch
 
 jobs:
   sync:
