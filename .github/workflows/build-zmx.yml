@@ -16,8 +16,8 @@ on:
 
 jobs:
   build:
-    # macos-15: the GhosttyKit CI proved zig 0.15.2 links here (its Xcode is
-    # older than the 26.4 build that breaks zig#31658 on dev machines).
+    # macos-15: the GhosttyKit CI proved zig links here (its Xcode is older
+    # than the 26.4 build that breaks zig#31658 on dev machines).
     runs-on: macos-15
     timeout-minutes: 60
     permissions:
@@ -28,7 +28,11 @@ jobs:
       - name: Install Zig
         uses: mlugg/setup-zig@v2
         with:
-          version: 0.15.2
+          # Must satisfy minimum_zig_version in build.zig.zon, which the daily
+          # upstream sync can bump out from under this pin — when the build
+          # starts failing with stdlib API mismatches right after a sync,
+          # check that field first.
+          version: 0.16.0
 
       # Build both arches and lipo into a universal binary — Macterm ships a
       # universal app, so an arm64-only zmx would fail to exec on Intel.
