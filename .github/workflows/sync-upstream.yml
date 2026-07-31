@@ -8,9 +8,16 @@ name: Sync Upstream
 #      These are copied verbatim on top of upstream.
 #   2. Source PATCHES (.github/downstream/*.patch) — genuine changes that must
 #      be re-applied onto upstream every sync. Applied with `git apply --3way`.
-#      Currently NONE: the OSC 8 state-tracking strip (zmx#182 workaround,
-#      thdxg/zmx#1) was retired when upstream bumped libghostty past
-#      ghostty#13394, which fixes the HyperlinkSetOutOfMemory abort properly.
+#      Every .patch must ALSO be listed in DOWNSTREAM_FILES: the reset to
+#      pristine upstream deletes anything not snapshotted, so an unlisted
+#      patch would silently vanish on the next sync.
+#      Current: 0001 casts Cfg.log_mode (u32) to mode_t at the two fromMode
+#      call sites that miss the cast — mode_t is u16 on macOS, so the build
+#      breaks only for us, not for upstream's Linux targets. Retire when
+#      upstream fixes it. (Previous patch, the OSC 8 state-tracking strip —
+#      zmx#182 workaround, thdxg/zmx#1 — was retired when upstream bumped
+#      libghostty past ghostty#13394, which fixes the HyperlinkSetOutOfMemory
+#      abort properly.)
 #
 # Why not `git diff upstream..HEAD` like the old workflow: it captured the whole
 # tree difference (including any accidental drift) and re-applied it every run,
@@ -24,7 +31,9 @@ name: Sync Upstream
 # To change the downstream delta:
 #   - New fork-owned CI file → add it to DOWNSTREAM_FILES.
 #   - New/changed source patch → regenerate the .patch under .github/downstream
-#     (e.g. `git format-patch`), commit it. Patches apply in filename order.
+#     (e.g. `git format-patch`), commit it, and add its path to
+#     DOWNSTREAM_FILES here AND in assert-no-drift.yml. Patches apply in
+#     filename order.
 
 on:
   schedule:
@@ -42,6 +51,7 @@ env:
     .github/workflows/build-zmx.yml
     .github/workflows/sync-upstream.yml
     .github/workflows/assert-no-drift.yml
+    .github/downstream/0001-cast-log_mode-to-mode_t-for-macos.patch
 
 jobs:
   sync:
