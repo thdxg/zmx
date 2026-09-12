@@ -68,6 +68,8 @@ pub fn clientLoop(client_sock_fd: i32, env_str: []const u8) !ClientResult {
     defer _ = lib_posix.fcntl(stdin_fd, lib_posix.F.SETFL, stdin_orig_flags) catch {};
 
     const detach_key_disabled = util.isDetachKeyDisabled();
+    // Outside the loop: it carries a partial sequence between reads.
+    var claim_filter: util.ClaimFilter = .{};
 
     while (true) {
         poll_fds.clearRetainingCapacity();
@@ -123,7 +125,18 @@ pub fn clientLoop(client_sock_fd: i32, env_str: []const u8) !ClientResult {
                         std.log.info("detach key detected", .{});
                         try ipc.appendMessage(gpa, &sock_write_buf, .Detach, "");
                     } else {
-                        try ipc.appendMessage(gpa, &sock_write_buf, .Input, buf[0..n]);
+                        // Excise any leadership claims and forward the rest.
+                        // Unlike the detach key this cannot drop the whole
+                        // read: a claim is written programmatically and may
+                        // share a read with the user's keystrokes.
+                        const filtered = claim_filter.feed(buf[0..n]);
+                        for (0..filtered.claims) |_| {
+                            std.log.info("leadership claim detected", .{});
+                            try ipc.appendMessage(gpa, &sock_write_buf, .Claim, "");
+                        }
+                        if (filtered.forward.len > 0) {
+                            try ipc.appendMessage(gpa, &sock_write_buf, .Input, filtered.forward);
+                        }
                     }
                 } else {
                     std.log.info("eof stdin", .{});
@@ -472,6 +485,7 @@ fn daemonLoop(daemon: *Daemon, gpa: std.mem.Allocator, io: std.Io, server_sock_f
                         .Init => try daemon.handleInit(gpa, client, pty_fd, &term, msg.payload),
                         .Switch => try daemon.handleSwitch(gpa, msg.payload),
                         .Resize => try daemon.handleResize(gpa, client, pty_fd, &term, msg.payload),
+                        .Claim => try daemon.handleClaim(gpa, client),
                         .Detach => {
                             daemon.handleDetach(gpa, client, i);
                             break :clients_loop;
@@ -906,6 +920,18 @@ pub const Daemon = struct {
             try self.setLeader(gpa, client);
             self.queuePtyInput(gpa, payload);
         }
+    }
+
+    /// Make this client the leader without it having to send input.
+    ///
+    /// `handleInput` already switches leadership on any real keystroke, which
+    /// is what a human at a keyboard does. A GUI frontend showing one session
+    /// in two panes needs to say "size the pty from this one" when the user
+    /// merely clicks or focuses it — and it cannot do that by typing, because
+    /// the keystroke would reach the running program.
+    pub fn handleClaim(self: *Daemon, gpa: std.mem.Allocator, client: *Client) !void {
+        if (self.leader_client_fd == client.socket_fd) return;
+        try self.setLeader(gpa, client);
     }
 
     /// Queue input from `zmx send` without changing interactive client leadership.
@@ -1358,6 +1384,69 @@ pub const Daemon = struct {
         client.has_pending_output = true;
     }
 };
+
+test "claim makes a non-leader client the leader" {
+    const alloc = std.testing.allocator;
+    var daemon = Daemon{
+        .cfg = undefined,
+        .clients = .empty,
+        .leader_client_fd = 42,
+        .session_name = "test",
+        .socket_path = "",
+        .running = true,
+        .pid = 0,
+        .created_at = 0,
+    };
+    // Built by hand rather than through Client.deinit's teardown: that closes
+    // socket_fd, and this fd number is a stand-in, not a real socket.
+    var client = Client{
+        .alloc = alloc,
+        .socket_fd = 7,
+        .read_buf = try ipc.SocketBuffer.init(alloc),
+        .write_buf = .empty,
+    };
+    defer client.read_buf.deinit();
+    defer client.write_buf.deinit(alloc);
+
+    try daemon.handleClaim(alloc, &client);
+
+    try std.testing.expectEqual(@as(?i32, 7), daemon.leader_client_fd);
+    // setLeader asks the new leader for its size, which is what resizes the
+    // pty — a claim that did not would leave the session at the old geometry.
+    try std.testing.expect(client.write_buf.items.len > 0);
+    try std.testing.expect(client.has_pending_output);
+}
+
+test "claim by the existing leader is a no-op" {
+    const alloc = std.testing.allocator;
+    var daemon = Daemon{
+        .cfg = undefined,
+        .clients = .empty,
+        .leader_client_fd = 7,
+        .session_name = "test",
+        .socket_path = "",
+        .running = true,
+        .pid = 0,
+        .created_at = 0,
+    };
+    // Built by hand rather than through Client.deinit's teardown: that closes
+    // socket_fd, and this fd number is a stand-in, not a real socket.
+    var client = Client{
+        .alloc = alloc,
+        .socket_fd = 7,
+        .read_buf = try ipc.SocketBuffer.init(alloc),
+        .write_buf = .empty,
+    };
+    defer client.read_buf.deinit();
+    defer client.write_buf.deinit(alloc);
+
+    try daemon.handleClaim(alloc, &client);
+
+    try std.testing.expectEqual(@as(?i32, 7), daemon.leader_client_fd);
+    // No size request: re-asking a leader for a size it already set would
+    // make every focus change a redundant pty resize and TUI redraw.
+    try std.testing.expectEqual(@as(usize, 0), client.write_buf.items.len);
+}
 
 test "terminal retains the configured scrollback without the default byte cap" {
     const alloc = std.testing.allocator;
