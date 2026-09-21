@@ -774,10 +774,23 @@ pub const Daemon = struct {
             }
         }
 
+        // macOS: the daemon re-execs itself disclaimed (see
+        // daemonize.reexecDisclaimed) and picks up in `resumeAfterReexec`;
+        // for it, daemonize() never returns.
+        const reexec: ?daemonize.Reexec = if (builtin.os.tag.isDarwin()) .{
+            .session_name = sesh_name,
+            .shell = self.shell,
+            .is_task_mode = self.is_task_mode,
+            .command = self.command,
+            .cwd = self.cwd,
+            .server_sock_fd = server_sock_fd,
+        } else null;
+
         const pty_info = daemonize.daemonize(
             sesh_name,
             cmd,
             &keep_fds_open,
+            reexec,
         ) catch |err| {
             switch (err) {
                 error.IsClientProc => {
@@ -803,6 +816,28 @@ pub const Daemon = struct {
         // deadlock.
         // =======
 
+        return self.serve(sesh_name, server_sock_fd, dir, pty_info);
+    }
+
+    /// The macOS daemon, picking up after `daemonize.reexecDisclaimed`: the
+    /// same process as the forked child, in a fresh image, with its state
+    /// restored by the `__daemon` entry from `daemonize.takeReexecState`.
+    /// Spawns the pty and serves exactly as `run` would have.
+    pub fn resumeAfterReexec(self: *Daemon, io: std.Io, server_sock_fd: lib_posix.socket_t, size: ipc.Resize) !bool {
+        var dir = try std.Io.Dir.openDirAbsolute(io, self.cfg.socket_dir, .{});
+        defer dir.close(io);
+        const cmd = try daemonize.createCmdZ(self.shell, self.is_task_mode, self.command);
+        const pty_info = daemonize.spawnPty(self.session_name, cmd, size) catch |err| {
+            lib_posix.close(server_sock_fd);
+            dir.deleteFile(io, self.session_name) catch {};
+            return err;
+        };
+        return self.serve(self.session_name, server_sock_fd, dir, pty_info);
+    }
+
+    /// Everything the daemon does once its pty exists, shared by the fork
+    /// path (`run`) and the macOS re-exec path (`resumeAfterReexec`).
+    fn serve(self: *Daemon, sesh_name: []const u8, server_sock_fd: lib_posix.socket_t, dir: std.Io.Dir, pty_info: daemonize.PtyInfo) !bool {
         self.pid = pty_info.pid;
 
         var threaded: std.Io.Threaded = .init_single_threaded;
