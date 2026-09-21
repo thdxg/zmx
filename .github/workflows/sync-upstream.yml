@@ -16,7 +16,11 @@ name: Sync Upstream
 #      (u32) to mode_t at the two fromMode call sites that miss the cast
 #      (mode_t is u16 on macOS); 0002 types wakeSignalPipe's first param
 #      with the platform SIG enum instead of a hardcoded std.os.linux.SIG.
-#      Neither changes upstream's Linux behavior. (Previous patch, the OSC
+#      Neither changes upstream's Linux behavior. 0004 makes the session
+#      daemon its own responsible process on macOS (re-exec disclaimed +
+#      embedded Info.plist), so pane programs keep their Local Network and
+#      TCC grants after the app that spawned them quits (macterm#419).
+#      Linux is untouched. (Previous patch, the OSC
 #      8 state-tracking strip —
 #      zmx#182 workaround, thdxg/zmx#1 — was retired when upstream bumped
 #      libghostty past ghostty#13394, which fixes the HyperlinkSetOutOfMemory
@@ -57,6 +61,7 @@ env:
     .github/downstream/0001-cast-log_mode-to-mode_t-for-macos.patch
     .github/downstream/0002-use-portable-sig-type-in-wake-handler.patch
     .github/downstream/0003-feat-let-a-client-claim-leadership-without-sending-i.patch
+    .github/downstream/0004-feat-make-the-session-daemon-its-own-responsible-pro.patch
 
 jobs:
   sync:
