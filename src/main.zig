@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const Environ = std.process.Environ;
 const build_options = @import("build_options");
 const ghostty_vt = @import("ghostty-vt");
@@ -13,6 +14,7 @@ const lib_posix = @import("posix.zig");
 const signal = @import("signal.zig");
 const Cfg = @import("cfg.zig");
 const loop = @import("loop.zig");
+const daemonize = @import("daemonize.zig");
 const Client = loop.Client;
 const Daemon = loop.Daemon;
 const version = build_options.version;
@@ -497,8 +499,75 @@ pub fn main(init: std.process.Init) !void {
         const sesh = try socket.resolveSessionOrEnv(gpa, io, sesh_arg);
         defer gpa.free(sesh);
         return envGet(gpa, io, &cfg, sesh, single_kv, shell_mode);
+    } else if (std.mem.eql(u8, cmd, daemonize.reexec_command)) {
+        return daemonEntry(gpa, io, &cfg, &args);
     } else {
         return printError(io, "unknown command \"{s}\"", .{cmd});
+    }
+}
+
+/// The macOS session daemon after its disclaiming re-exec; not a user command
+/// (see `daemonize.reexecDisclaimed`). argv is `__daemon <session> [-- command...]`;
+/// the rest of the state rides in `daemonize.reexec_env` and is consumed here,
+/// before the shell exists.
+fn daemonEntry(gpa: std.mem.Allocator, io: std.Io, cfg: *Cfg, args: anytype) !void {
+    const sesh = args.next() orelse {
+        return printError(io, "{s}: session name required", .{daemonize.reexec_command});
+    };
+    var command: std.ArrayList([]const u8) = .empty;
+    defer command.deinit(gpa);
+    if (args.next()) |sep| {
+        if (!std.mem.eql(u8, sep, "--")) {
+            return printError(io, "{s}: unexpected argument \"{s}\"", .{ daemonize.reexec_command, sep });
+        }
+        while (args.next()) |arg| try command.append(gpa, arg);
+    }
+    const state = (try daemonize.takeReexecState(gpa)) orelse {
+        return printError(io, "{s}: no re-exec state in the environment", .{daemonize.reexec_command});
+    };
+
+    const socket_path = socket.getSocketPath(gpa, cfg.socket_dir, sesh) catch |err| switch (err) {
+        error.NameTooLong => return socket.printSessionNameTooLong(io, sesh, cfg.socket_dir),
+        error.OutOfMemory => return err,
+    };
+    var daemon = Daemon.init(io, cfg, sesh, socket_path);
+    daemon.shell = state.shell;
+    daemon.is_task_mode = state.is_task_mode;
+    if (command.items.len > 0) daemon.command = command.items;
+    if (state.cwd.len > 0) daemon.setCwd(state.cwd);
+    std.log.info("daemon re-exec'd disclaimed session={s} pid={d}", .{ sesh, std.c.getpid() });
+    _ = try daemon.resumeAfterReexec(io, state.server_sock_fd, state.size);
+}
+
+/// Embedded Info.plist, macOS only, in `__TEXT,__info_plist` — where codesign
+/// and the privacy subsystems look for a bare executable's identity. The
+/// daemon is the responsible process for every program in a session (see
+/// `daemonize.reexecDisclaimed`), so when one of them first touches the local
+/// network this is the name and reason macOS shows, and the grant is recorded
+/// against this bundle identifier plus the binary's code signature. Macterm
+/// signs its bundled copy with the app's release certificate for that reason:
+/// an ad-hoc signature would make every release a new identity.
+const info_plist_text =
+    \\<?xml version="1.0" encoding="UTF-8"?>
+    \\<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+    \\<plist version="1.0">
+    \\<dict>
+    \\  <key>CFBundleIdentifier</key>
+    \\  <string>com.thdxg.macterm.zmx</string>
+    \\  <key>CFBundleName</key>
+    \\  <string>Macterm Sessions</string>
+    \\  <key>CFBundleDisplayName</key>
+    \\  <string>Macterm Sessions</string>
+    \\  <key>NSLocalNetworkUsageDescription</key>
+    \\  <string>Programs running in Macterm panes may connect to devices on your local network.</string>
+    \\</dict>
+    \\</plist>
+    \\
+;
+const info_plist: [info_plist_text.len]u8 = info_plist_text.*;
+comptime {
+    if (builtin.os.tag.isDarwin()) {
+        @export(&info_plist, .{ .name = "zmx_info_plist", .section = "__TEXT,__info_plist" });
     }
 }
 
