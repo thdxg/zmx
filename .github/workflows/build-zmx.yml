@@ -53,6 +53,14 @@ jobs:
           # Both slices must be present, or the universal build is broken.
           lipo zig-out/bin/zmx -verify_arch arm64 x86_64
           file zig-out/bin/zmx
+          # Downstream patch 0004 embeds an Info.plist that macOS names in the
+          # privacy prompts raised for programs in a session; a binary without
+          # it ships a nameless daemon (and the first release did, silently —
+          # a ReleaseSafe link dead-stripped the section). launchctl reads a
+          # thin Mach-O only, hence per-slice.
+          for slice in zig-out-arm64/bin/zmx zig-out-x86_64/bin/zmx; do
+            launchctl plist __TEXT,__info_plist "$slice" | grep -q com.thdxg.macterm.zmx
+          done
 
       - name: Package
         run: |
