@@ -46,6 +46,7 @@ pub fn main(init: std.process.Init) !void {
     // write() can return BrokenPipe. Inherited across fork, so this also
     // covers the daemon.
     signal.ignoreSigpipe();
+    keepInfoPlist();
 
     var args = init.minimal.args.iterate();
     defer args.deinit();
@@ -569,6 +570,14 @@ comptime {
     if (builtin.os.tag.isDarwin()) {
         @export(&info_plist, .{ .name = "zmx_info_plist", .section = "__TEXT,__info_plist" });
     }
+}
+
+/// Keeps the section in a release build. Nothing reads `info_plist` at run
+/// time, and a ReleaseSafe link dead-strips an export nothing references —
+/// the first CI build shipped without the section while a Debug build had
+/// it. Called from `main`, which is the one place every build reaches.
+fn keepInfoPlist() void {
+    if (builtin.os.tag.isDarwin()) std.mem.doNotOptimizeAway(&info_plist);
 }
 
 fn help(io: std.Io) !void {
