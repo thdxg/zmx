@@ -192,8 +192,9 @@ extern "c" fn responsibility_spawnattrs_setdisclaim(attr: *std.c.posix_spawnattr
 /// `POSIX_SPAWN_SETEXEC` lets the forked child apply it to itself by exec'ing
 /// in place: same pid, same session, same fds. The daemon is then the
 /// responsible process for as long as the session lives, whatever happens to
-/// the app, and its own identity — the embedded Info.plist in main.zig plus
-/// the code signature Macterm applies — is what the system asks the user about.
+/// the app, and its code signature's identifier is what the system asks the
+/// user about: Macterm signs its bundled copy as the app itself, so the prompt
+/// names Macterm and the daemon shares the app's grant.
 fn reexecDisclaimed(spec: Reexec, size: ipc.Resize) !void {
     const gpa = std.heap.c_allocator;
 

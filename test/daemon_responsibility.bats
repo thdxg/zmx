@@ -70,12 +70,3 @@ responsible_for() {
   run "$ZMX" history leak-test
   [[ "$output" != *"ZMX_DAEMON_"* ]]
 }
-
-@test "macos: the binary carries the Info.plist the privacy prompts read" {
-  [[ "$(uname)" == "Darwin" ]] || skip "Mach-O sections are macOS-only"
-
-  run launchctl plist __TEXT,__info_plist "$ZMX"
-  [ "$status" -eq 0 ]
-  [[ "$output" == *"CFBundleIdentifier"* ]]
-  [[ "$output" == *"NSLocalNetworkUsageDescription"* ]]
-}

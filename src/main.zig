@@ -46,7 +46,6 @@ pub fn main(init: std.process.Init) !void {
     // write() can return BrokenPipe. Inherited across fork, so this also
     // covers the daemon.
     signal.ignoreSigpipe();
-    keepInfoPlist();
 
     var args = init.minimal.args.iterate();
     defer args.deinit();
@@ -538,46 +537,6 @@ fn daemonEntry(gpa: std.mem.Allocator, io: std.Io, cfg: *Cfg, args: anytype) !vo
     if (state.cwd.len > 0) daemon.setCwd(state.cwd);
     std.log.info("daemon re-exec'd disclaimed session={s} pid={d}", .{ sesh, std.c.getpid() });
     _ = try daemon.resumeAfterReexec(io, state.server_sock_fd, state.size);
-}
-
-/// Embedded Info.plist, macOS only, in `__TEXT,__info_plist` — where codesign
-/// and the privacy subsystems look for a bare executable's identity. The
-/// daemon is the responsible process for every program in a session (see
-/// `daemonize.reexecDisclaimed`), so when one of them first touches the local
-/// network this is the name and reason macOS shows, and the grant is recorded
-/// against this bundle identifier plus the binary's code signature. Macterm
-/// signs its bundled copy with the app's release certificate for that reason:
-/// an ad-hoc signature would make every release a new identity.
-const info_plist_text =
-    \\<?xml version="1.0" encoding="UTF-8"?>
-    \\<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-    \\<plist version="1.0">
-    \\<dict>
-    \\  <key>CFBundleIdentifier</key>
-    \\  <string>com.thdxg.macterm.zmx</string>
-    \\  <key>CFBundleName</key>
-    \\  <string>Macterm Sessions</string>
-    \\  <key>CFBundleDisplayName</key>
-    \\  <string>Macterm Sessions</string>
-    \\  <key>NSLocalNetworkUsageDescription</key>
-    \\  <string>Programs running in Macterm panes may connect to devices on your local network.</string>
-    \\</dict>
-    \\</plist>
-    \\
-;
-const info_plist: [info_plist_text.len]u8 = info_plist_text.*;
-comptime {
-    if (builtin.os.tag.isDarwin()) {
-        @export(&info_plist, .{ .name = "zmx_info_plist", .section = "__TEXT,__info_plist" });
-    }
-}
-
-/// Keeps the section in a release build. Nothing reads `info_plist` at run
-/// time, and a ReleaseSafe link dead-strips an export nothing references —
-/// the first CI build shipped without the section while a Debug build had
-/// it. Called from `main`, which is the one place every build reaches.
-fn keepInfoPlist() void {
-    if (builtin.os.tag.isDarwin()) std.mem.doNotOptimizeAway(&info_plist);
 }
 
 fn help(io: std.Io) !void {
