@@ -1,52 +1,27 @@
-From 11affe6e73579463bec60b8b5ad92df6a656dfe2 Mon Sep 17 00:00:00 2001
 From: Ethan Lee <ethantlee21@gmail.com>
-Date: Mon, 21 Sep 2026 19:40:19 -0400
-Subject: [PATCH] feat: make the session daemon its own responsible process on
- macOS
-MIME-Version: 1.0
-Content-Type: text/plain; charset=UTF-8
-Content-Transfer-Encoding: 8bit
+Subject: [PATCH] feat: make the session daemon its own responsible process on macOS
 
 macOS attributes privacy-gated operations (Local Network, TCC) to a
-process's *responsible process*, a value fixed at spawn and inherited from
-the parent. A session created by `zmx attach` was therefore attributed to
-the terminal app that ran it, and the moment that app exited every process
-in the session became responsible for itself; a client reattaching over
-the socket never re-attributes them, since reattach is a connect, not a
-fork. From then on each program in the session was judged by its own
-identity, which for anything that is not an Apple binary meant local
-network access refused with EHOSTUNREACH and no prompt (macterm#419).
+process's *responsible process*, fixed at spawn and inherited from the
+parent, so a session created by `zmx attach` was attributed to the app
+that ran it, and to nothing once that app quit: every survivor becomes
+responsible for itself and a client reattaching over the socket never
+re-attributes it. Each program in the session was then judged by its own
+identity, which for anything not Apple-signed meant local network access
+refused with EHOSTUNREACH and no prompt (macterm#419).
 
-Responsibility cannot be changed after the fact (the responsibility_set_*
-calls need a private entitlement), but the disclaim exists as a spawn
-attribute, and POSIX_SPAWN_SETEXEC lets the forked child apply it to
-itself by exec'ing in place: same pid, same session, same fds. The daemon
-now re-execs as `zmx __daemon <session> [-- command...]` with the rest of
-its state in ZMX_DAEMON_* variables that the entry consumes before the
-shell exists, and picks up where run() left off. The listen socket is
-inherited (its CLOEXEC cleared) rather than recreated, because the client
-connects the moment the fork returns. If the re-exec fails the daemon
-carries on in the forked image, exactly as before.
-
-The daemon is then the responsible process for as long as the session
-lives, whatever happens to the app, and its own identity is what the
-system asks the user about — so the binary embeds an Info.plist
-(__TEXT,__info_plist) naming com.thdxg.macterm.zmx with a Local Network
-usage description; Macterm signs its bundled copy with the app's release
-certificate so that identity is stable across updates.
-
-Linux is unchanged. The new bats file pins the contract on Darwin and
-skips elsewhere.
+Responsibility cannot be changed after the fact, but the disclaim exists
+as a spawn attribute and POSIX_SPAWN_SETEXEC lets the forked child apply
+it to itself by exec'ing in place: same pid, session and fds. The daemon
+re-execs as `zmx __daemon <session> [-- command...]` with the rest of its
+state in ZMX_DAEMON_* variables consumed before the shell exists, and
+falls back to the forked image if that fails. Its code signature's
+identifier is what macOS then asks the user about; Macterm signs its
+bundled copy as the app itself. Linux is unchanged; the bats file pins the
+contract on Darwin and skips elsewhere.
 ---
- src/daemonize.zig               | 164 +++++++++++++++++++++++++++++++-
- src/loop.zig                    |  35 +++++++
- src/main.zig                    |  69 ++++++++++++++
- test/daemon_responsibility.bats |  81 ++++++++++++++++
- 4 files changed, 348 insertions(+), 1 deletion(-)
- create mode 100644 test/daemon_responsibility.bats
-
 diff --git a/src/daemonize.zig b/src/daemonize.zig
-index 800431b..b94aedc 100644
+index 800431b..98be69a 100644
 --- a/src/daemonize.zig
 +++ b/src/daemonize.zig
 @@ -1,4 +1,5 @@
@@ -55,7 +30,7 @@ index 800431b..b94aedc 100644
  const lib_posix = @import("posix.zig");
  const Cfg = @import("cfg.zig");
  const socket = @import("socket.zig");
-@@ -124,6 +125,160 @@ pub fn spawnPty(sesh_name: []const u8, cmd: Cmd, size: ipc.Resize) !PtyInfo {
+@@ -124,6 +125,161 @@ pub fn spawnPty(sesh_name: []const u8, cmd: Cmd, size: ipc.Resize) !PtyInfo {
      };
  }
  
@@ -126,8 +101,9 @@ index 800431b..b94aedc 100644
 +/// `POSIX_SPAWN_SETEXEC` lets the forked child apply it to itself by exec'ing
 +/// in place: same pid, same session, same fds. The daemon is then the
 +/// responsible process for as long as the session lives, whatever happens to
-+/// the app, and its own identity — the embedded Info.plist in main.zig plus
-+/// the code signature Macterm applies — is what the system asks the user about.
++/// the app, and its code signature's identifier is what the system asks the
++/// user about: Macterm signs its bundled copy as the app itself, so the prompt
++/// names Macterm and the daemon shares the app's grant.
 +fn reexecDisclaimed(spec: Reexec, size: ipc.Resize) !void {
 +    const gpa = std.heap.c_allocator;
 +
@@ -216,7 +192,7 @@ index 800431b..b94aedc 100644
  /// daemonize is the first fork in a double-fork technique to create a
  /// completely disconnected session (container of process groups).
  ///
-@@ -167,7 +322,7 @@ pub fn spawnPty(sesh_name: []const u8, cmd: Cmd, size: ipc.Resize) !PtyInfo {
+@@ -167,7 +323,7 @@ pub fn spawnPty(sesh_name: []const u8, cmd: Cmd, size: ipc.Resize) !PtyInfo {
  ///                 ✝          │ PID≠SID → can't get a tty
  ///                            ▼
  ///                          DAEMON ✓
@@ -225,7 +201,7 @@ index 800431b..b94aedc 100644
      // creates the daemon
      const pid = try lib_posix.fork();
      assert(pid != -1);
-@@ -235,5 +390,12 @@ pub fn daemonize(sesh_name: []const u8, cmd: Cmd, keep_fds_open: []i32) !PtyInfo
+@@ -235,5 +391,12 @@ pub fn daemonize(sesh_name: []const u8, cmd: Cmd, keep_fds_open: []i32) !PtyInfo
          }
      }
  
@@ -239,10 +215,47 @@ index 800431b..b94aedc 100644
      return spawnPty(sesh_name, cmd, term_size);
  }
 diff --git a/src/loop.zig b/src/loop.zig
-index 6651421..b8f01cf 100644
+index c5e7fda..b8f01cf 100644
 --- a/src/loop.zig
 +++ b/src/loop.zig
-@@ -774,10 +774,23 @@ pub const Daemon = struct {
+@@ -68,6 +68,8 @@ pub fn clientLoop(client_sock_fd: i32, env_str: []const u8) !ClientResult {
+     defer _ = lib_posix.fcntl(stdin_fd, lib_posix.F.SETFL, stdin_orig_flags) catch {};
+ 
+     const detach_key_disabled = util.isDetachKeyDisabled();
++    // Outside the loop: it carries a partial sequence between reads.
++    var claim_filter: util.ClaimFilter = .{};
+ 
+     while (true) {
+         poll_fds.clearRetainingCapacity();
+@@ -123,7 +125,18 @@ pub fn clientLoop(client_sock_fd: i32, env_str: []const u8) !ClientResult {
+                         std.log.info("detach key detected", .{});
+                         try ipc.appendMessage(gpa, &sock_write_buf, .Detach, "");
+                     } else {
+-                        try ipc.appendMessage(gpa, &sock_write_buf, .Input, buf[0..n]);
++                        // Excise any leadership claims and forward the rest.
++                        // Unlike the detach key this cannot drop the whole
++                        // read: a claim is written programmatically and may
++                        // share a read with the user's keystrokes.
++                        const filtered = claim_filter.feed(buf[0..n]);
++                        for (0..filtered.claims) |_| {
++                            std.log.info("leadership claim detected", .{});
++                            try ipc.appendMessage(gpa, &sock_write_buf, .Claim, "");
++                        }
++                        if (filtered.forward.len > 0) {
++                            try ipc.appendMessage(gpa, &sock_write_buf, .Input, filtered.forward);
++                        }
+                     }
+                 } else {
+                     std.log.info("eof stdin", .{});
+@@ -472,6 +485,7 @@ fn daemonLoop(daemon: *Daemon, gpa: std.mem.Allocator, io: std.Io, server_sock_f
+                         .Init => try daemon.handleInit(gpa, client, pty_fd, &term, msg.payload),
+                         .Switch => try daemon.handleSwitch(gpa, msg.payload),
+                         .Resize => try daemon.handleResize(gpa, client, pty_fd, &term, msg.payload),
++                        .Claim => try daemon.handleClaim(gpa, client),
+                         .Detach => {
+                             daemon.handleDetach(gpa, client, i);
+                             break :clients_loop;
+@@ -760,10 +774,23 @@ pub const Daemon = struct {
              }
          }
  
@@ -266,7 +279,7 @@ index 6651421..b8f01cf 100644
          ) catch |err| {
              switch (err) {
                  error.IsClientProc => {
-@@ -803,6 +816,28 @@ pub const Daemon = struct {
+@@ -789,6 +816,28 @@ pub const Daemon = struct {
          // deadlock.
          // =======
  
@@ -295,8 +308,97 @@ index 6651421..b8f01cf 100644
          self.pid = pty_info.pid;
  
          var threaded: std.Io.Threaded = .init_single_threaded;
+@@ -908,6 +957,18 @@ pub const Daemon = struct {
+         }
+     }
+ 
++    /// Make this client the leader without it having to send input.
++    ///
++    /// `handleInput` already switches leadership on any real keystroke, which
++    /// is what a human at a keyboard does. A GUI frontend showing one session
++    /// in two panes needs to say "size the pty from this one" when the user
++    /// merely clicks or focuses it — and it cannot do that by typing, because
++    /// the keystroke would reach the running program.
++    pub fn handleClaim(self: *Daemon, gpa: std.mem.Allocator, client: *Client) !void {
++        if (self.leader_client_fd == client.socket_fd) return;
++        try self.setLeader(gpa, client);
++    }
++
+     /// Queue input from `zmx send` without changing interactive client leadership.
+     pub fn handleSend(self: *Daemon, gpa: std.mem.Allocator, payload: []const u8) void {
+         self.queuePtyInput(gpa, payload);
+@@ -1359,6 +1420,69 @@ pub const Daemon = struct {
+     }
+ };
+ 
++test "claim makes a non-leader client the leader" {
++    const alloc = std.testing.allocator;
++    var daemon = Daemon{
++        .cfg = undefined,
++        .clients = .empty,
++        .leader_client_fd = 42,
++        .session_name = "test",
++        .socket_path = "",
++        .running = true,
++        .pid = 0,
++        .created_at = 0,
++    };
++    // Built by hand rather than through Client.deinit's teardown: that closes
++    // socket_fd, and this fd number is a stand-in, not a real socket.
++    var client = Client{
++        .alloc = alloc,
++        .socket_fd = 7,
++        .read_buf = try ipc.SocketBuffer.init(alloc),
++        .write_buf = .empty,
++    };
++    defer client.read_buf.deinit();
++    defer client.write_buf.deinit(alloc);
++
++    try daemon.handleClaim(alloc, &client);
++
++    try std.testing.expectEqual(@as(?i32, 7), daemon.leader_client_fd);
++    // setLeader asks the new leader for its size, which is what resizes the
++    // pty — a claim that did not would leave the session at the old geometry.
++    try std.testing.expect(client.write_buf.items.len > 0);
++    try std.testing.expect(client.has_pending_output);
++}
++
++test "claim by the existing leader is a no-op" {
++    const alloc = std.testing.allocator;
++    var daemon = Daemon{
++        .cfg = undefined,
++        .clients = .empty,
++        .leader_client_fd = 7,
++        .session_name = "test",
++        .socket_path = "",
++        .running = true,
++        .pid = 0,
++        .created_at = 0,
++    };
++    // Built by hand rather than through Client.deinit's teardown: that closes
++    // socket_fd, and this fd number is a stand-in, not a real socket.
++    var client = Client{
++        .alloc = alloc,
++        .socket_fd = 7,
++        .read_buf = try ipc.SocketBuffer.init(alloc),
++        .write_buf = .empty,
++    };
++    defer client.read_buf.deinit();
++    defer client.write_buf.deinit(alloc);
++
++    try daemon.handleClaim(alloc, &client);
++
++    try std.testing.expectEqual(@as(?i32, 7), daemon.leader_client_fd);
++    // No size request: re-asking a leader for a size it already set would
++    // make every focus change a redundant pty resize and TUI redraw.
++    try std.testing.expectEqual(@as(usize, 0), client.write_buf.items.len);
++}
++
+ test "terminal retains the configured scrollback without the default byte cap" {
+     const alloc = std.testing.allocator;
+     const cfg = Cfg{ .socket_dir = "", .log_dir = "" };
 diff --git a/src/main.zig b/src/main.zig
-index 7ddef1e..639cf83 100644
+index 7ddef1e..177d912 100644
 --- a/src/main.zig
 +++ b/src/main.zig
 @@ -1,4 +1,5 @@
@@ -313,7 +415,7 @@ index 7ddef1e..639cf83 100644
  const Client = loop.Client;
  const Daemon = loop.Daemon;
  const version = build_options.version;
-@@ -497,11 +499,78 @@ pub fn main(init: std.process.Init) !void {
+@@ -497,11 +499,46 @@ pub fn main(init: std.process.Init) !void {
          const sesh = try socket.resolveSessionOrEnv(gpa, io, sesh_arg);
          defer gpa.free(sesh);
          return envGet(gpa, io, &cfg, sesh, single_kv, shell_mode);
@@ -357,47 +459,15 @@ index 7ddef1e..639cf83 100644
 +    _ = try daemon.resumeAfterReexec(io, state.server_sock_fd, state.size);
 +}
 +
-+/// Embedded Info.plist, macOS only, in `__TEXT,__info_plist` — where codesign
-+/// and the privacy subsystems look for a bare executable's identity. The
-+/// daemon is the responsible process for every program in a session (see
-+/// `daemonize.reexecDisclaimed`), so when one of them first touches the local
-+/// network this is the name and reason macOS shows, and the grant is recorded
-+/// against this bundle identifier plus the binary's code signature. Macterm
-+/// signs its bundled copy with the app's release certificate for that reason:
-+/// an ad-hoc signature would make every release a new identity.
-+const info_plist_text =
-+    \\<?xml version="1.0" encoding="UTF-8"?>
-+    \\<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-+    \\<plist version="1.0">
-+    \\<dict>
-+    \\  <key>CFBundleIdentifier</key>
-+    \\  <string>com.thdxg.macterm.zmx</string>
-+    \\  <key>CFBundleName</key>
-+    \\  <string>Macterm Sessions</string>
-+    \\  <key>CFBundleDisplayName</key>
-+    \\  <string>Macterm Sessions</string>
-+    \\  <key>NSLocalNetworkUsageDescription</key>
-+    \\  <string>Programs running in Macterm panes may connect to devices on your local network.</string>
-+    \\</dict>
-+    \\</plist>
-+    \\
-+;
-+const info_plist: [info_plist_text.len]u8 = info_plist_text.*;
-+comptime {
-+    if (builtin.os.tag.isDarwin()) {
-+        @export(&info_plist, .{ .name = "zmx_info_plist", .section = "__TEXT,__info_plist" });
-+    }
-+}
-+
  fn help(io: std.Io) !void {
      const help_text =
          \\zmx - session persistence for terminal processes
 diff --git a/test/daemon_responsibility.bats b/test/daemon_responsibility.bats
 new file mode 100644
-index 0000000..d4c02ea
+index 0000000..d327c41
 --- /dev/null
 +++ b/test/daemon_responsibility.bats
-@@ -0,0 +1,81 @@
+@@ -0,0 +1,72 @@
 +#!/usr/bin/env bats
 +# macOS attributes privacy-gated operations (Local Network, TCC) to a process's
 +# *responsible process*, a value fixed at spawn and inherited from the parent.
@@ -470,15 +540,3 @@ index 0000000..d4c02ea
 +  run "$ZMX" history leak-test
 +  [[ "$output" != *"ZMX_DAEMON_"* ]]
 +}
-+
-+@test "macos: the binary carries the Info.plist the privacy prompts read" {
-+  [[ "$(uname)" == "Darwin" ]] || skip "Mach-O sections are macOS-only"
-+
-+  run launchctl plist __TEXT,__info_plist "$ZMX"
-+  [ "$status" -eq 0 ]
-+  [[ "$output" == *"CFBundleIdentifier"* ]]
-+  [[ "$output" == *"NSLocalNetworkUsageDescription"* ]]
-+}
--- 
-2.53.0
-
