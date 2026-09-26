@@ -1,4 +1,4 @@
-From 495a92dd629222fdefdda458c7ceebf5c7eea920 Mon Sep 17 00:00:00 2001
+From 660911da628ad92ca31237cc17d0747ca3960b87 Mon Sep 17 00:00:00 2001
 From: Ethan Lee <ethantlee21@gmail.com>
 Date: Sun, 6 Sep 2026 15:25:40 -0400
 Subject: [PATCH] feat: let a client claim leadership without sending input
@@ -69,7 +69,7 @@ index c81d15a..485d937 100644
      // @enumFromInt, so out-of-range values are representable
      // rather than UB. Switches must handle `_` (unknown tag).
 diff --git a/src/loop.zig b/src/loop.zig
-index 513d3f5..765a9e3 100644
+index c5e7fda..6651421 100644
 --- a/src/loop.zig
 +++ b/src/loop.zig
 @@ -68,6 +68,8 @@ pub fn clientLoop(client_sock_fd: i32, env_str: []const u8) !ClientResult {
@@ -128,7 +128,7 @@ index 513d3f5..765a9e3 100644
      /// Queue input from `zmx send` without changing interactive client leadership.
      pub fn handleSend(self: *Daemon, gpa: std.mem.Allocator, payload: []const u8) void {
          self.queuePtyInput(gpa, payload);
-@@ -1360,6 +1386,69 @@ pub const Daemon = struct {
+@@ -1359,6 +1385,69 @@ pub const Daemon = struct {
      }
  };
  
@@ -199,7 +199,7 @@ index 513d3f5..765a9e3 100644
      const alloc = std.testing.allocator;
      const cfg = Cfg{ .socket_dir = "", .log_dir = "" };
 diff --git a/src/util.zig b/src/util.zig
-index d96f5a1..3d53d84 100644
+index e83ccdb..128ec14 100644
 --- a/src/util.zig
 +++ b/src/util.zig
 @@ -519,6 +519,89 @@ pub fn stripAnsi(alloc: std.mem.Allocator, data: []const u8) ![]const u8 {
@@ -292,9 +292,9 @@ index d96f5a1..3d53d84 100644
  pub fn isCtrlBackslash(buf: []const u8) bool {
      if (buf.len == 0) return false;
      return buf[0] == 0x1C or isKeyPressed(buf, 0x5c, 0b100) or isModifyOtherKey(buf, 0x5c, 0b100);
-@@ -2191,3 +2274,75 @@ test "stripAnsi: only escape sequences" {
-     defer alloc.free(result);
-     try testing.expectEqualStrings("", result);
+@@ -2206,3 +2289,75 @@ test "isUserInput: kitty keyboard status reply is a terminal response" {
+     try testing.expect(isUserInput("\x1b[?1u\x1b[97;1u"));
+     try testing.expect(!isUserInput("\x1b[?1u\x1b[97;1:3u"));
  }
 +
 +test "ClaimFilter: a lone claim is consumed and forwards nothing" {
