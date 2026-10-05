@@ -1,4 +1,4 @@
-From 660911da628ad92ca31237cc17d0747ca3960b87 Mon Sep 17 00:00:00 2001
+From 118f0bb83af7224c315ec065e00c77a8ae6245c2 Mon Sep 17 00:00:00 2001
 From: Ethan Lee <ethantlee21@gmail.com>
 Date: Sun, 6 Sep 2026 15:25:40 -0400
 Subject: [PATCH] feat: let a client claim leadership without sending input
@@ -42,34 +42,48 @@ leader by coincidence.
 test/claim_leader.py drives two real PTYs at different sizes to prove the two
 properties the in-process tests cannot reach: a second client attaching does
 not resize the pty, and a claim does — with no keystroke reaching the program.
+The tag is 23: it was 22 until upstream took that number for Capture
+(neurosnap/zmx 20c0d5e). A daemon handed the old value sees a Capture with
+no payload and drops it, so the collision is safe to leave behind.
 ---
- src/ipc.zig          |   5 ++
+ src/ipc.zig          |   9 ++-
  src/loop.zig         |  91 ++++++++++++++++++++++++-
  src/util.zig         | 155 +++++++++++++++++++++++++++++++++++++++++++
  test/claim_leader.py |  97 +++++++++++++++++++++++++++
  test/leader.bats     |  20 ++++++
- 5 files changed, 367 insertions(+), 1 deletion(-)
+ 5 files changed, 370 insertions(+), 2 deletions(-)
  create mode 100644 test/claim_leader.py
  create mode 100644 test/leader.bats
 
 diff --git a/src/ipc.zig b/src/ipc.zig
-index c81d15a..485d937 100644
+index ac8be60..b7f3505 100644
 --- a/src/ipc.zig
 +++ b/src/ipc.zig
-@@ -26,6 +26,11 @@ pub const Tag = enum(u8) {
-     EnvGet = 19,
-     EnvSet = 20,
-     EnvData = 21,
+@@ -29,6 +29,13 @@ pub const Tag = enum(u8) {
+     /// Scoped history: the active screen plus a bounded number of
+     /// preceding scrollback rows. Request payload is `Capture`.
+     Capture = 22,
 +    /// A client asking to become the session's leader without sending input
-+    /// (see util.ClaimFilter). Numbered after upstream's Env* tags: these are
++    /// (see util.ClaimFilter). Numbered after upstream's newest tag: these are
 +    /// wire values, so a downstream tag must never squat on a number upstream
 +    /// has since taken — a claim decoding as EnvGet would be silent corruption.
-+    Claim = 22,
++    /// It was 22 until upstream took that for Capture; a daemon receiving the
++    /// old value sees a Capture with no payload and drops it.
++    Claim = 23,
      // Non-exhaustive: this enum comes off the wire via bytesToValue and
      // @enumFromInt, so out-of-range values are representable
      // rather than UB. Switches must handle `_` (unknown tag).
+@@ -356,7 +363,7 @@ test "Tag wire values are frozen" {
+         .{ Tag.Write, 12 },    .{ Tag.TaskComplete, 13 }, .{ Tag.LabelGet, 14 },
+         .{ Tag.LabelSet, 15 }, .{ Tag.LabelClear, 16 },   .{ Tag.LabelData, 17 },
+         .{ Tag.Send, 18 },     .{ Tag.EnvGet, 19 },       .{ Tag.EnvSet, 20 },
+-        .{ Tag.EnvData, 21 },  .{ Tag.Capture, 22 },
++        .{ Tag.EnvData, 21 },  .{ Tag.Capture, 22 },      .{ Tag.Claim, 23 },
+     }) |p| try std.testing.expectEqual(@as(u8, p[1]), @intFromEnum(p[0]));
+ }
+ 
 diff --git a/src/loop.zig b/src/loop.zig
-index c5e7fda..6651421 100644
+index 30310da..611017e 100644
 --- a/src/loop.zig
 +++ b/src/loop.zig
 @@ -68,6 +68,8 @@ pub fn clientLoop(client_sock_fd: i32, env_str: []const u8) !ClientResult {
@@ -109,7 +123,7 @@ index c5e7fda..6651421 100644
                          .Detach => {
                              daemon.handleDetach(gpa, client, i);
                              break :clients_loop;
-@@ -908,6 +922,18 @@ pub const Daemon = struct {
+@@ -909,6 +923,18 @@ pub const Daemon = struct {
          }
      }
  
@@ -128,7 +142,7 @@ index c5e7fda..6651421 100644
      /// Queue input from `zmx send` without changing interactive client leadership.
      pub fn handleSend(self: *Daemon, gpa: std.mem.Allocator, payload: []const u8) void {
          self.queuePtyInput(gpa, payload);
-@@ -1359,6 +1385,69 @@ pub const Daemon = struct {
+@@ -1377,6 +1403,69 @@ pub const Daemon = struct {
      }
  };
  
@@ -199,7 +213,7 @@ index c5e7fda..6651421 100644
      const alloc = std.testing.allocator;
      const cfg = Cfg{ .socket_dir = "", .log_dir = "" };
 diff --git a/src/util.zig b/src/util.zig
-index e83ccdb..128ec14 100644
+index c3ba418..0d7ba34 100644
 --- a/src/util.zig
 +++ b/src/util.zig
 @@ -519,6 +519,89 @@ pub fn stripAnsi(alloc: std.mem.Allocator, data: []const u8) ![]const u8 {
@@ -292,7 +306,7 @@ index e83ccdb..128ec14 100644
  pub fn isCtrlBackslash(buf: []const u8) bool {
      if (buf.len == 0) return false;
      return buf[0] == 0x1C or isKeyPressed(buf, 0x5c, 0b100) or isModifyOtherKey(buf, 0x5c, 0b100);
-@@ -2206,3 +2289,75 @@ test "isUserInput: kitty keyboard status reply is a terminal response" {
+@@ -2305,3 +2388,75 @@ test "isUserInput: kitty keyboard status reply is a terminal response" {
      try testing.expect(isUserInput("\x1b[?1u\x1b[97;1u"));
      try testing.expect(!isUserInput("\x1b[?1u\x1b[97;1:3u"));
  }
