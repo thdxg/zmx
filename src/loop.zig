@@ -620,6 +620,12 @@ pub const Daemon = struct {
     task_ended_at: ?u64 = null, // timestamp when task exited
     pty_fd: i32 = -1, // set by daemonLoop so handleRun can probe the foreground process
     shell: []const u8 = "/bin/sh",
+    /// Whether the client that creates the session prints `session "<name>"
+    /// created`. `attach` turns it off: it clears the screen right after, and
+    /// on a terminal only a row or two tall the line's newline scrolls it into
+    /// scrollback, out of the clear's reach, where it survives above the
+    /// session's prompt once the terminal grows.
+    announce_create: bool = true,
 
     /// Create a Daemon. Caller is responsible for freeing all variables passed
     /// into the init fn.
@@ -796,10 +802,12 @@ pub const Daemon = struct {
             switch (err) {
                 error.IsClientProc => {
                     // send a msg to the client that the session was created.
-                    var w_buf: [2048]u8 = undefined;
-                    var w = std.Io.File.stdout().writer(io, &w_buf);
-                    try w.interface.print("session \"{s}\" created\n", .{sesh_name});
-                    try w.interface.flush();
+                    if (self.announce_create) {
+                        var w_buf: [2048]u8 = undefined;
+                        var w = std.Io.File.stdout().writer(io, &w_buf);
+                        try w.interface.print("session \"{s}\" created\n", .{sesh_name});
+                        try w.interface.flush();
+                    }
                     lib_posix.close(server_sock_fd);
                     return false;
                 },

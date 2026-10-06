@@ -1647,6 +1647,9 @@ fn attach(gpa: std.mem.Allocator, io: std.Io, daemon: *Daemon, env_str: []const 
         return switchSesh(gpa, io, daemon, sesh);
     }
 
+    // The screen is cleared below, so announcing the new session only risks
+    // leaving the line behind (see `Daemon.announce_create`).
+    daemon.announce_create = false;
     const is_daemon_proc = try daemon.ensureSession(io);
     if (is_daemon_proc) return;
 
