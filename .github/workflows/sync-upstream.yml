@@ -62,6 +62,7 @@ env:
     .github/downstream/0002-use-portable-sig-type-in-wake-handler.patch
     .github/downstream/0003-feat-let-a-client-claim-leadership-without-sending-i.patch
     .github/downstream/0004-feat-make-the-session-daemon-its-own-responsible-pro.patch
+    .github/downstream/0005-fix-don-t-announce-a-session-that-attach-creates.patch
 
 jobs:
   sync:
