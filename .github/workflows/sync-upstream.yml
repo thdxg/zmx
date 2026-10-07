@@ -63,6 +63,7 @@ env:
     .github/downstream/0003-feat-let-a-client-claim-leadership-without-sending-i.patch
     .github/downstream/0004-feat-make-the-session-daemon-its-own-responsible-pro.patch
     .github/downstream/0005-fix-don-t-announce-a-session-that-attach-creates.patch
+    .github/downstream/0006-fix-replay-the-mouse-mode-a-program-set-last-not-the.patch
 
 jobs:
   sync:
