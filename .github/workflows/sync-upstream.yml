@@ -58,6 +58,7 @@ env:
     .github/workflows/build-zmx.yml
     .github/workflows/sync-upstream.yml
     .github/workflows/assert-no-drift.yml
+    .github/workflows/test.yml
     .github/downstream/0001-cast-log_mode-to-mode_t-for-macos.patch
     .github/downstream/0002-use-portable-sig-type-in-wake-handler.patch
     .github/downstream/0003-feat-let-a-client-claim-leadership-without-sending-i.patch
