@@ -998,10 +998,25 @@ pub fn serializeTerminalState(alloc: std.mem.Allocator, term: *ghostty_vt.Termin
                 ),
             };
             scroll_fmt.extra = .none; // no modes, cursor, keyboard — just content
+            // Join soft-wrapped rows into their logical line. The client
+            // wraps the line at its own width and reflows it on every later
+            // resize. A row-per-line replay would hard-wrap the scrollback at
+            // the width this terminal was resized to for the snapshot, and a
+            // client that attaches before its window is laid out reports a
+            // placeholder size there, not the one it renders at.
+            scroll_fmt.opts.unwrap = true;
             scroll_fmt.format(&builder.writer) catch |err| {
                 std.log.warn("failed to format scrollback err={s}", .{@errorName(err)});
             };
         }
+
+        // Scroll the scrollback off the screen before clearing it. After
+        // phase 1 its last rows are still on the screen, and \x1b[2J erases
+        // the screen in place, so the client would lose them. One linefeed
+        // per screen row scrolls every row that phase 1 wrote into the
+        // client's scrollback, whatever row the cursor is on, and leaves the
+        // screen blank.
+        for (0..pages.rows) |_| builder.writer.writeAll("\r\n") catch {};
 
         // Clear visible screen after scrollback. \x1b[2J clears only the visible
         // rows (not the scrollback buffer). \x1b[H homes the cursor. \x1b[0m resets
@@ -1784,6 +1799,82 @@ test "serializeTerminalState excludes synchronized output replay" {
     // but NOT synchronized output (DECSET 2026)
     try testing.expect(std.mem.indexOf(u8, output, "\x1b[?2004h") != null);
     try testing.expect(std.mem.indexOf(u8, output, "\x1b[?2026h") == null);
+}
+
+test "serializeTerminalState keeps a soft-wrapped scrollback line whole" {
+    const alloc = testing.allocator;
+    const io = testing.io;
+
+    // Ten columns: the 25-character line wraps over three rows. Two rows of
+    // screen and two newlines push all three into scrollback.
+    var term = try testCreateTerminal(alloc, io, 10, 2, "abcdefghijklmnopqrstuvwxy\r\n\r\nprompt");
+    defer term.deinit(alloc);
+
+    const output = serializeTerminalState(alloc, &term) orelse return error.TestUnexpectedNull;
+    defer alloc.free(output);
+
+    // The line reaches the client as one, not as three rows that the
+    // client's own grid can never join again.
+    try testing.expect(std.mem.indexOf(u8, output, "abcdefghijklmnopqrstuvwxy") != null);
+    try testing.expect(std.mem.indexOf(u8, output, "abcdefghij\r\n") == null);
+}
+
+test "serializeTerminalState keeps the scrollback rows that are on screen before the clear" {
+    const alloc = testing.allocator;
+    const io = testing.io;
+
+    // Eleven lines on two rows: SCROLL_0..SCROLL_8 are scrollback, SCROLL_9
+    // and the prompt are the screen.
+    var term = try testCreateTerminal(alloc, io, 10, 2, "");
+    defer term.deinit(alloc);
+    {
+        var stream = term.vtStream();
+        defer stream.deinit();
+        var buf: [16]u8 = undefined;
+        for (0..10) |i| {
+            const line = std.fmt.bufPrint(&buf, "SCROLL_{d}\r\n", .{i}) catch unreachable;
+            stream.nextSlice(line);
+        }
+        stream.nextSlice("prompt");
+    }
+
+    var client = try serializeRoundtrip(alloc, io, &term);
+    defer client.deinit(alloc);
+
+    // The last two scrollback rows were still on the client's screen when
+    // the snapshot cleared it. They must end up in its scrollback, not
+    // erased.
+    const history = serializeTerminal(alloc, &client, .plain) orelse return error.TestUnexpectedNull;
+    defer alloc.free(history);
+    try testing.expect(std.mem.indexOf(u8, history, "SCROLL_7\nSCROLL_8\n") != null);
+    try expectScreensMatch(alloc, &term, &client);
+    try expectCursorAt(&client, 1, 6);
+}
+
+test "serializeTerminalState lets a wider client lay a wrapped line out on one row" {
+    const alloc = testing.allocator;
+    const io = testing.io;
+
+    var term = try testCreateTerminal(alloc, io, 10, 2, "abcdefghijklmnopqrstuvwxy\r\n\r\nprompt");
+    defer term.deinit(alloc);
+
+    const output = serializeTerminalState(alloc, &term) orelse return error.TestUnexpectedNull;
+    defer alloc.free(output);
+
+    // The client reflows the logical line at its own width, and the row it
+    // lands on was scrolled out before the clear.
+    var wide = try ghostty_vt.Terminal.init(io, alloc, .{
+        .cols = 40,
+        .rows = 2,
+        .max_scrollback_lines = 2_000,
+    });
+    defer wide.deinit(alloc);
+    var stream = wide.vtStream();
+    defer stream.deinit();
+    stream.nextSlice(output);
+    const history = serializeTerminal(alloc, &wide, .plain) orelse return error.TestUnexpectedNull;
+    defer alloc.free(history);
+    try testing.expect(std.mem.indexOf(u8, history, "abcdefghijklmnopqrstuvwxy\n") != null);
 }
 
 test "serializeTerminalState replays the mouse format set last" {
