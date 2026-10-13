@@ -64,6 +64,8 @@ env:
     .github/downstream/0004-feat-make-the-session-daemon-its-own-responsible-pro.patch
     .github/downstream/0005-fix-don-t-announce-a-session-that-attach-creates.patch
     .github/downstream/0006-fix-replay-the-mouse-mode-a-program-set-last-not-the.patch
+    .github/downstream/0007-fix-replay-scrollback-as-logical-lines-so-the-client-c.patch
+    .github/downstream/0008-fix-scroll-the-replayed-scrollback-off-the-screen-befo.patch
 
 jobs:
   sync:
