@@ -1026,6 +1026,13 @@ pub fn serializeTerminalState(alloc: std.mem.Allocator, term: *ghostty_vt.Termin
 
     // Phase 2: visible screen with full extras (modes, cursor, keyboard, etc.)
     var vis_fmt = ghostty_vt.formatter.TerminalFormatter.init(term, .vt);
+    // Logical lines here too. The client has the width this terminal was
+    // resized to for the snapshot, so a joined line wraps at the same cells
+    // and the cursor lands on the same row; a later resize then reflows it,
+    // where a row-per-line replay would have cut it at the attach width for
+    // good. A client that attaches in a warm-up window and only then moves
+    // into its real pane gets a visible screen it can reshape.
+    vis_fmt.opts.unwrap = true;
 
     // Restrict content to the active viewport only
     const active_tl = pages.pin(.{ .active = .{ .x = 0, .y = 0 } });
@@ -1849,6 +1856,39 @@ test "serializeTerminalState keeps the scrollback rows that are on screen before
     try testing.expect(std.mem.indexOf(u8, history, "SCROLL_7\nSCROLL_8\n") != null);
     try expectScreensMatch(alloc, &term, &client);
     try expectCursorAt(&client, 1, 6);
+}
+
+test "serializeTerminalState keeps a soft-wrapped line on the visible screen whole" {
+    const alloc = testing.allocator;
+    const io = testing.io;
+
+    // Four rows, no scrollback: the wrapped line and the prompt are the
+    // visible screen.
+    var term = try testCreateTerminal(alloc, io, 10, 4, "abcdefghijklmnopqrstuvwxy\r\nprompt");
+    defer term.deinit(alloc);
+
+    // At the same size the screen and the cursor come back as they were.
+    var client = try serializeRoundtrip(alloc, io, &term);
+    defer client.deinit(alloc);
+    try expectScreensMatch(alloc, &term, &client);
+    try expectCursorAt(&client, 3, 6);
+
+    // A wider client lays the line out on one row: it arrived as one.
+    const output = serializeTerminalState(alloc, &term) orelse return error.TestUnexpectedNull;
+    defer alloc.free(output);
+    try testing.expect(std.mem.indexOf(u8, output, "abcdefghijklmnopqrstuvwxy") != null);
+    var wide = try ghostty_vt.Terminal.init(io, alloc, .{
+        .cols = 40,
+        .rows = 4,
+        .max_scrollback_lines = 2_000,
+    });
+    defer wide.deinit(alloc);
+    var stream = wide.vtStream();
+    defer stream.deinit();
+    stream.nextSlice(output);
+    const screen = try wide.plainString(alloc);
+    defer alloc.free(screen);
+    try testing.expect(std.mem.indexOf(u8, screen, "abcdefghijklmnopqrstuvwxy\n") != null);
 }
 
 test "serializeTerminalState lets a wider client lay a wrapped line out on one row" {
