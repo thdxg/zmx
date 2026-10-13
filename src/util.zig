@@ -998,6 +998,13 @@ pub fn serializeTerminalState(alloc: std.mem.Allocator, term: *ghostty_vt.Termin
                 ),
             };
             scroll_fmt.extra = .none; // no modes, cursor, keyboard — just content
+            // Join soft-wrapped rows into their logical line. The client
+            // wraps the line at its own width and reflows it on every later
+            // resize. A row-per-line replay would hard-wrap the scrollback at
+            // the width this terminal was resized to for the snapshot, and a
+            // client that attaches before its window is laid out reports a
+            // placeholder size there, not the one it renders at.
+            scroll_fmt.opts.unwrap = true;
             scroll_fmt.format(&builder.writer) catch |err| {
                 std.log.warn("failed to format scrollback err={s}", .{@errorName(err)});
             };
@@ -1784,6 +1791,24 @@ test "serializeTerminalState excludes synchronized output replay" {
     // but NOT synchronized output (DECSET 2026)
     try testing.expect(std.mem.indexOf(u8, output, "\x1b[?2004h") != null);
     try testing.expect(std.mem.indexOf(u8, output, "\x1b[?2026h") == null);
+}
+
+test "serializeTerminalState keeps a soft-wrapped scrollback line whole" {
+    const alloc = testing.allocator;
+    const io = testing.io;
+
+    // Ten columns: the 25-character line wraps over three rows. Two rows of
+    // screen and two newlines push all three into scrollback.
+    var term = try testCreateTerminal(alloc, io, 10, 2, "abcdefghijklmnopqrstuvwxy\r\n\r\nprompt");
+    defer term.deinit(alloc);
+
+    const output = serializeTerminalState(alloc, &term) orelse return error.TestUnexpectedNull;
+    defer alloc.free(output);
+
+    // The line reaches the client as one, not as three rows that the
+    // client's own grid can never join again.
+    try testing.expect(std.mem.indexOf(u8, output, "abcdefghijklmnopqrstuvwxy") != null);
+    try testing.expect(std.mem.indexOf(u8, output, "abcdefghij\r\n") == null);
 }
 
 test "serializeTerminalState replays the mouse format set last" {
