@@ -1,8 +1,8 @@
 name: Test
 
-# Fork-owned. Builds zmx and runs its Zig tests on every pull request and
-# every push to main, so a change is proven on CI before build-zmx.yml
-# publishes it. Nobody has to build zmx on a dev machine: the macOS 27 SDK
+# Fork-owned. Builds zmx and runs its Zig tests and its bats tests on every
+# pull request and every push to main, so a change is proven on CI before
+# build-zmx.yml publishes it. Nobody has to build zmx on a dev machine: the macOS 27 SDK
 # breaks the native build there, and a cross build for Linux takes minutes
 # and still needs a container to run.
 #
@@ -46,6 +46,33 @@ jobs:
 
       - name: Run the tests
         run: zig build test --summary all
+
+      - name: Install bats
+        run: |
+          if [ "$RUNNER_OS" = macOS ]; then
+            brew install bats-core
+          else
+            sudo apt-get update -q
+            sudo apt-get install -y -q bats
+          fi
+
+      - name: Build zmx
+        run: zig build
+
+      # leader.bats runs claim_leader.py. A skipped test fails the step, so a
+      # missing tool cannot hide a test. daemon_responsibility.bats tests a
+      # macOS concept, so Linux leaves it out.
+      - name: Run the bats tests
+        run: |
+          files=$(ls test/*.bats)
+          if [ "$RUNNER_OS" != macOS ]; then
+            files=$(echo "$files" | grep -v daemon_responsibility)
+          fi
+          bats --jobs 1 --tap $files | tee bats.tap
+          if grep -q '# skip' bats.tap; then
+            echo "::error::A bats test was skipped."
+            exit 1
+          fi
 
       - name: Build the x86_64 slice
         if: runner.os == 'macOS'

@@ -110,7 +110,8 @@ The fork's IPC tags start at 192, far from upstream's sequence: `Claim` is
 
 ## CI
 
-- `test.yml` builds zmx and runs the Zig tests (`zig build test`) on Linux
-  and macOS, on every pull request and every push to `main`. The bats tests
-  and the Python tests in `test/` do not run in CI.
+- `test.yml` builds zmx and runs the Zig tests (`zig build test`) and the
+  bats tests in `test/` on Linux and macOS, on every pull request and every
+  push to `main`. `leader.bats` runs `claim_leader.py`. A skipped test fails
+  the job. Linux leaves out `daemon_responsibility.bats` (Darwin only).
 - `build-zmx.yml` publishes the release that Macterm pins.
