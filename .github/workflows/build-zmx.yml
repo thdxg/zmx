@@ -82,10 +82,7 @@ jobs:
       - name: Install Zig
         uses: mlugg/setup-zig@v2
         with:
-          # Must satisfy minimum_zig_version in build.zig.zon, which the daily
-          # upstream sync can bump out from under this pin — when the build
-          # starts failing with stdlib API mismatches right after a sync,
-          # check that field first.
+          # Must satisfy minimum_zig_version in build.zig.zon.
           version: 0.17.1
 
       - name: Resolve version
