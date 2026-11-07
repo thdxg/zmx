@@ -706,7 +706,10 @@ pub const Daemon = struct {
         }
         self.labels.deinit(gpa);
         self.pty_write_buf.deinit(gpa);
-        gpa.free(self.socket_path);
+        // socket_path belongs to the caller of init, as its doc says. The
+        // daemon's `gpa` is not the allocator that made it: `serve` picks its
+        // own, and in a ReleaseSafe build main's is zig's SafeAllocator, so a
+        // free here gave malloc a pointer it never allocated (SIGABRT).
     }
 
     pub fn shutdown(self: *Daemon, gpa: std.mem.Allocator) void {
@@ -1799,6 +1802,20 @@ test "send queues PTY input without changing leader" {
     try std.testing.expectEqualStrings("hello", daemon.pty_write_buf.items);
 }
 
+test "deinit leaves socket_path to the caller" {
+    // The path is not from the allocator that deinit gets. Freeing it there
+    // is the bad free that aborted the daemon at exit.
+    var path_buf = "/tmp/zmx-test/session".*;
+    var daemon = Daemon{
+        .cfg = undefined,
+        .session_name = "test",
+        .socket_path = &path_buf,
+        .created_at = 0,
+    };
+    daemon.deinit(std.testing.allocator);
+    try std.testing.expectEqualStrings("/tmp/zmx-test/session", daemon.socket_path);
+}
+
 test "handleEnvGet returns leader client's environment variables including unsets" {
     const alloc = std.testing.allocator;
     var cfg = Cfg{
@@ -1810,7 +1827,7 @@ test "handleEnvGet returns leader client's environment variables including unset
         .cfg = &cfg,
         .clients = .empty,
         .session_name = "test",
-        .socket_path = try alloc.dupe(u8, ""),
+        .socket_path = "",
         .running = true,
         .pid = 0,
         .created_at = 0,
