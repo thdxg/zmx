@@ -479,6 +479,8 @@ fn daemonEntry(gpa: std.mem.Allocator, io: std.Io, cfg: *Cfg, args: anytype) !vo
     const state = (try daemonize.takeReexecState(gpa)) orelse {
         return printError(io, "{s}: no re-exec state in the environment", .{daemonize.reexec_command});
     };
+    defer gpa.free(state.shell);
+    defer gpa.free(state.cwd);
 
     const socket_path = socket.getSocketPath(gpa, cfg.socket_dir, sesh) catch |err| switch (err) {
         error.NameTooLong => return socket.printSessionNameTooLong(io, sesh, cfg.socket_dir),
