@@ -4,14 +4,15 @@ This fork is the session daemon of [Macterm](https://github.com/thdxg/macterm).
 It no longer syncs with [upstream zmx](https://github.com/neurosnap/zmx).
 
 - **Base:** upstream `v1.0.1` (`a35f00a2118b15a5e9d522a43035c8d7487df9b7`).
-  The fork stopped syncing on 2026-11-07.
 - **Upstream fixes** are copied by hand, with their tests, when one is worth
   it. To see what upstream did since the base:
+  `git remote add upstream https://github.com/neurosnap/zmx.git`, then
   `git fetch upstream && git log a35f00a..upstream/main`.
 - **Each change below was a patch** (`.github/downstream/00NN-*.patch`) that a
   daily sync applied again on top of upstream. The code now holds the changes
   directly. The numbers stay as names, because Macterm's history cites them.
-  `git log` of the fork has the full text of each patch until this commit.
+  `77fc677` is the last commit that has the patch files:
+  `git show 77fc677:.github/downstream/<name>` prints one.
 
 ## Changes
 
@@ -109,6 +110,7 @@ The fork's IPC tags start at 192, far from upstream's sequence: `Claim` is
 
 ## CI
 
-- `test.yml` builds zmx and runs the tests on Linux and macOS, on every pull
-  request and every push to `main`.
+- `test.yml` builds zmx and runs the Zig tests (`zig build test`) on Linux
+  and macOS, on every pull request and every push to `main`. The bats tests
+  and the Python tests in `test/` do not run in CI.
 - `build-zmx.yml` publishes the release that Macterm pins.
