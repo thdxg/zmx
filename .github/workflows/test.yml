@@ -47,10 +47,13 @@ jobs:
       - name: Run the tests
         run: zig build test --summary all
 
+      # Some tests run `timeout`, which macOS does not have. coreutils
+      # gives it.
       - name: Install bats
         run: |
           if [ "$RUNNER_OS" = macOS ]; then
-            brew install bats-core
+            brew install bats-core coreutils
+            echo "$(brew --prefix coreutils)/libexec/gnubin" >> "$GITHUB_PATH"
           else
             sudo apt-get update -q
             sudo apt-get install -y -q bats
