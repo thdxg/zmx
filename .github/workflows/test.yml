@@ -2,9 +2,9 @@ name: Test
 
 # Fork-owned. Builds zmx and runs its Zig tests and its bats tests on every
 # pull request and every push to main, so a change is proven on CI before
-# build-zmx.yml publishes it. Nobody has to build zmx on a dev machine: the macOS 27 SDK
-# breaks the native build there, and a cross build for Linux takes minutes
-# and still needs a container to run.
+# build-zmx.yml publishes it. Nobody has to build zmx on a dev machine: the
+# macOS 27 SDK breaks the native build there, and a cross build for Linux
+# takes minutes and still needs a container to run.
 #
 # Linux runs the tests natively. macOS is where the published binary runs
 # and where change 0004 (see DOWNSTREAM.md) runs, so it runs the tests too and
@@ -61,15 +61,22 @@ jobs:
 
       # leader.bats runs claim_leader.py. A skipped test fails the step, so a
       # missing tool cannot hide a test. daemon_responsibility.bats tests a
-      # macOS concept, so Linux leaves it out.
+      # macOS concept, so Linux leaves it out. The short TMPDIR keeps the
+      # session socket paths under the macOS limit of 104 bytes.
       - name: Run the bats tests
+        shell: bash
+        env:
+          TMPDIR: ${{ runner.temp }}
         run: |
-          files=$(ls test/*.bats)
-          if [ "$RUNNER_OS" != macOS ]; then
-            files=$(echo "$files" | grep -v daemon_responsibility)
-          fi
-          bats --jobs 1 --tap $files | tee bats.tap
-          if grep -q '# skip' bats.tap; then
+          files=()
+          for f in test/*.bats; do
+            if [ "$RUNNER_OS" != macOS ] && [ "$f" = test/daemon_responsibility.bats ]; then
+              continue
+            fi
+            files+=("$f")
+          done
+          bats --tap "${files[@]}" | tee bats.tap
+          if grep -qE '^ok [0-9]+ .* # skip' bats.tap; then
             echo "::error::A bats test was skipped."
             exit 1
           fi

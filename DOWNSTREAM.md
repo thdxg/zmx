@@ -42,7 +42,7 @@ the local network with no prompt (macterm#419).
 - No process that keeps running calls `unsetenv`: zig 0.17's `std.Io` caches
   the environment block and panics on a shortened one.
 - Code: `src/daemonize.zig`, `src/main.zig`, `src/loop.zig`.
-- Test: `test/daemon_responsibility.bats` (Darwin only).
+- Test: `test/daemon_responsibility.bats` (macOS only).
 
 ### 0005: attach creates a session quietly
 
@@ -113,5 +113,5 @@ The fork's IPC tags start at 192, far from upstream's sequence: `Claim` is
 - `test.yml` builds zmx and runs the Zig tests (`zig build test`) and the
   bats tests in `test/` on Linux and macOS, on every pull request and every
   push to `main`. `leader.bats` runs `claim_leader.py`. A skipped test fails
-  the job. Linux leaves out `daemon_responsibility.bats` (Darwin only).
+  the job. Linux leaves out `daemon_responsibility.bats` (macOS only).
 - `build-zmx.yml` publishes the release that Macterm pins.
